@@ -20,6 +20,12 @@ from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
 
 import pickle
+import logging
+
+# configuring logging
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 default_args = {
     'retries':3,
@@ -28,7 +34,6 @@ default_args = {
     'email_on_failure': False,
     'email_on_retry': False,
 }
-
 
 
 
@@ -44,16 +49,36 @@ default_args = {
 
 @task
 def get_data():
-    postgres_hook = PostgresHook(postgres_conn_id='postgres_churn')
-    query = "SELECT * FROM customers;"
-    df = postgres_hook.get_pandas_df(query)
-    print(f"Data shape: {df.shape}")
-    print(f"Data Head: {df.head()}")
-    print(f"Data info: {df.info()}")
+    """
+    Retrieves customer data from PostgresSQL database
+    """
+
     logger = LoggingMixin().log
-    logger.info(f"Data shape: {df.shape}")
-    logger.info(f"\nData Head: \n{df.head()}")
-    return df 
+    try:
+        # fetching data
+        postgres_hook = PostgresHook(postgres_conn_id='postgres_churn')
+        query = "SELECT * FROM customers;"
+        df = postgres_hook.get_pandas_df(query)
+        
+        logger.info("Data retrieval successful")
+        logger.info(f"Data size: {len(df)}")
+        logger.info(f"Columns: {', '.join(df.columns)}")
+
+        # logging null value counts
+        null_count = df.isnull().sum()
+        logger.info("Number of Nulls per column:")
+        for col, count in null_count.items():
+            logger.info(f":{col}: {count} null values")
+
+        # data types
+        logger.info(f"Data Types: {df.dtypes}")
+        
+        # data stats
+        logger.info(f"Columns summary: {df.describe().to_string()}")
+        return df 
+    except Exception as e:
+        logger.error(f"Error occured while retrievinf data: {str(e)}")
+        raise
 
 
 @task
