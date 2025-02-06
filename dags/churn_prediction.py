@@ -136,6 +136,8 @@ def model_workflow():
         X_train_processed = preprocessor.fit_transform(X_train)
         X_test_processed = preprocessor.transform(X_test)
 
+
+        # handling class imbalance using SMOTE 
         smote = SMOTE(random_state=42)
         X_train_balanced, y_train_balanced = smote.fit_resample(X_train_processed, y_train)
 
