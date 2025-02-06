@@ -112,7 +112,7 @@ def model_workflow():
         
         X = df[features]
         y = df[target]
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         
         numerical_features = ['age', 'contract_length', 'monthly_charges']
         categorical_features = ['contract_type']
@@ -136,8 +136,8 @@ def model_workflow():
         X_train_processed = preprocessor.fit_transform(X_train)
         X_test_processed = preprocessor.transform(X_test)
 
-        # smote = SMOTE(random_state=42)
-        # X_train_balanced, y_train_balanced = smote.fit_resample(X_train_processed, y_train)
+        smote = SMOTE(random_state=42)
+        X_train_balanced, y_train_balanced = smote.fit_resample(X_train_processed, y_train)
 
         categorical_features_encoded = [f"contract_type_{cat}" for cat in 
                                      preprocessor.named_transformers_['cat']
@@ -145,10 +145,10 @@ def model_workflow():
                                      .get_feature_names_out(['contract_type'])]
         feature_names = numerical_features + list(categorical_features_encoded)
 
-        X_train_processed = pd.DataFrame(X_train_processed, columns=feature_names)
+        X_train_processed = pd.DataFrame(X_train_balanced, columns=feature_names)
         X_test_processed = pd.DataFrame(X_test_processed, columns=feature_names)
 
-        y_train_df = pd.DataFrame({'target': y_train.values})
+        y_train_df = pd.DataFrame({'target': y_train_balanced.values})
         y_test_df = pd.DataFrame({'target': y_test.values})
 
         X_train_path = os.path.join(temp_dir, 'X_train.csv')
@@ -196,7 +196,7 @@ def model_workflow():
     @task
     def evaluate_model(model_path, data_paths):
         """Evaluates the trained model"""
-        
+
         with open(model_path, 'rb') as f:
             model = pickle.load(f)
     
