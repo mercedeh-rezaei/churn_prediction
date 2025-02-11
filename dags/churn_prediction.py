@@ -13,7 +13,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, make_scorer, precision_score, recall_score, f1_score
+from sklearn.model_selection import cross_val_score, KFold, cross_validate
 
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
@@ -71,6 +72,7 @@ def model_workflow():
 
     @task
     def get_data():
+
         """Retrieves customer data from PostgresSQL database"""
 
         logger = LoggingMixin().log
@@ -103,6 +105,7 @@ def model_workflow():
     @task
     def preprocessing(df, dirs):
         """Preprocesses the input data and saves intermediate files"""
+        logger = LoggingMixin().log
         df = df.copy()
         temp_dir = dirs['temp_dir']
         os.makedirs(temp_dir, exist_ok=True) 
@@ -112,8 +115,21 @@ def model_workflow():
         
         X = df[features]
         y = df[target]
+
+        # initial class dist
+        # initial_dist  = pd.Series(y).value_counts()
+        # logger.info("Initial class dist before SMOTE:")
+        # for label, count in initial_dist.items():
+        #     logger.info(f"Class {label}: {count} samples ({count/len(y)*100:.2f}%)")
+
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         
+        # # logging training dist before SMOTE
+        # train_dist = pd.Series(y_train).value_counts()
+        # logger.info("Training set class dist before SMOTE:")
+        # for label,count in train_dist.items():
+        #     logger.info(f"Class {label}: {count} samples ({count/len(y)*100:.2f}%)")
+
         numerical_features = ['age', 'contract_length', 'monthly_charges']
         categorical_features = ['contract_type']
 
@@ -138,19 +154,31 @@ def model_workflow():
 
 
         # handling class imbalance using SMOTE 
-        smote = SMOTE(random_state=42)
-        X_train_balanced, y_train_balanced = smote.fit_resample(X_train_processed, y_train)
+        # smote = SMOTE(random_state=42)
+        # X_train_balanced, y_train_balanced = smote.fit_resample(X_train_processed, y_train)
+
+        # after smote 
+        # balanced_dist = pd.Series(y_train_balanced).value_counts()
+        # logger.info("Class dist after SMOTE:")
+        # for label, count in balanced_dist.items():
+        #     logger.info(f"Class {label}: {count} samples ({count/len(y_train_balanced)*100:.2f}%)")
+
+        # logger.info(f"Shape before SMOTE: {X_train_processed.shape}")
+        # logger.info(f"Shape after SMOTE: {X_train_balanced.shape}")
+
 
         categorical_features_encoded = [f"contract_type_{cat}" for cat in 
-                                     preprocessor.named_transformers_['cat']
-                                     .named_steps['onehot']
-                                     .get_feature_names_out(['contract_type'])]
+                                     preprocessor.named_transformers_['cat'] # comes from column transformer
+                                     .named_steps['onehot'] # comes from pipeline
+                                     .get_feature_names_out(['contract_type'])] # comes from onehotencoder
         feature_names = numerical_features + list(categorical_features_encoded)
 
-        X_train_processed = pd.DataFrame(X_train_balanced, columns=feature_names)
+        X_train_processed = pd.DataFrame(X_train_processed, columns=feature_names)
+        # X_train_processed = pd.DataFrame(X_train_balanced, columns=feature_names)
         X_test_processed = pd.DataFrame(X_test_processed, columns=feature_names)
 
-        y_train_df = pd.DataFrame({'target': y_train_balanced.values})
+        # y_train_df = pd.DataFrame({'target': y_train_balanced.values})
+        y_train_df = pd.DataFrame({'target': y_train.values})
         y_test_df = pd.DataFrame({'target': y_test.values})
 
         X_train_path = os.path.join(temp_dir, 'X_train.csv')
@@ -187,19 +215,32 @@ def model_workflow():
             class_weight='balanced'
         )
 
+        cv = KFold(n_splits=5, shuffle=True, random_state=42)
+        cv_scores = cross_val_score(logistic_reg, X_train, y_train, cv=cv)
+
+        logger.info("\nCross-validation accuracy scores:")
+        logger.info(f"Individual fold scores: {cv_scores}")
+        logger.info(f"Mean CV accuracy : {cv_scores.mean():.3f} (+/- {cv_scores.std() * 2:.3f})")
+
         logistic_reg.fit(X_train, y_train)
 
         model_path = os.path.join(dirs['temp_dir'], 'model.pkl')
         with open(model_path, 'wb') as f:
             pickle.dump(logistic_reg, f)
 
-        return model_path
+        return {
+            'model_path': model_path,
+            'cv_scores': {
+                'mean_accuracy': float(cv_scores.mean()),
+                'std_accuracy': float(cv_scores.std())
+            }
+        }
 
     @task
-    def evaluate_model(model_path, data_paths):
+    def evaluate_model(model_info, data_paths):
         """Evaluates the trained model"""
 
-        with open(model_path, 'rb') as f:
+        with open(model_info['model_path'], 'rb') as f:
             model = pickle.load(f)
     
         X_test = pd.read_csv(data_paths['X_test_path'])
@@ -213,9 +254,14 @@ def model_workflow():
         logger.info(f"Model Accuracy: {accuracy}")
         logger.info(f"Classification report:\n{classification_report(y_test, y_pred)}")
 
+        logger.info("\nCross-validation Results:")
+        logger.info(f"Mean CV Accuracy: {model_info['cv_scores']['mean_accuracy']:.3f} "
+                f"(+/- {model_info['cv_scores']['std_accuracy'] * 2:.3f})")
+
         return {
             'accuracy': float(accuracy),
-            'classification_report': class_report
+            'classification_report': class_report,
+            'cv_scores': model_info['cv_scores']
         }
 
     @task
@@ -227,7 +273,7 @@ def model_workflow():
         final_model_path = os.path.join(model_dir, 'logistic_regression_churn_model.pkl')
         final_preprocessor_path = os.path.join(model_dir, 'churn_preprocessor.pkl')
 
-        with open(model_path, 'rb') as f_in:
+        with open(model_path['model_path'], 'rb') as f_in:
             model = pickle.load(f_in)
             with open(final_model_path, 'wb') as f_out:
                 pickle.dump(model, f_out)
