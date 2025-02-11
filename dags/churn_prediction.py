@@ -210,6 +210,7 @@ def model_workflow():
         y_train = pd.read_csv(paths['y_train_path'])['target']
 
         logistic_reg = LogisticRegression(
+            C=0.1, # inverse regulariser
             max_iter=1000,
             random_state=42,
             class_weight='balanced'
@@ -235,7 +236,7 @@ def model_workflow():
                 'std_accuracy': float(cv_scores.std())
             }
         }
-
+    
     @task
     def evaluate_model(model_info, data_paths):
         """Evaluates the trained model"""
@@ -245,24 +246,80 @@ def model_workflow():
     
         X_test = pd.read_csv(data_paths['X_test_path'])
         y_test = pd.read_csv(data_paths['y_test_path'])['target']
+        X_train = pd.read_csv(data_paths['X_train_path'])
+        y_train = pd.read_csv(data_paths['y_train_path'])['target']
 
-        y_pred = model.predict(X_test)
-        accuracy = accuracy_score(y_test, y_pred)
-        class_report = classification_report(y_test, y_pred, output_dict=True)
+        y_test_pred = model.predict(X_test)
+        y_train_pred = model.predict(X_train)
+
+        test_accuracy = accuracy_score(y_test, y_test_pred)
+        train_accuracy = accuracy_score(y_train, y_train_pred)
+        performance_gap = train_accuracy - test_accuracy
+        class_report = classification_report(y_test, y_test_pred, output_dict=True)
 
         logger = LoggingMixin().log
-        logger.info(f"Model Accuracy: {accuracy}")
-        logger.info(f"Classification report:\n{classification_report(y_test, y_pred)}")
 
-        logger.info("\nCross-validation Results:")
-        logger.info(f"Mean CV Accuracy: {model_info['cv_scores']['mean_accuracy']:.3f} "
-                f"(+/- {model_info['cv_scores']['std_accuracy'] * 2:.3f})")
+        logger.info(f"Model Accuracy: {test_accuracy}")
+        logger.info(f"Classification report:\n{classification_report(y_test, y_test_pred)}")
+
+        # analysing overfitting
+        logger.info(f"Training Accuracy: {train_accuracy:.3f}")
+        logger.info(f"Test Accuracy: {test_accuracy:.3f}")
+        logger.info(f"Performance Gap: {performance_gap:.3f}")
+        logger.info(f"CV Mean Accuracy: {model_info['cv_scores']['mean_accuracy']:.3f}")
+        logger.info(f"CV Std Accuracy: {model_info['cv_scores']['std_accuracy']:.3f}")
+
+        overfitting_risk = "LOW"
+        if performance_gap > 0.1: # gap is more than 10%
+            overfitting_risk = "HIGH"
+        elif performance_gap > 0.05: # gap is between 5 and 10%
+            overfitting_risk = "MEDIUM"
+        
+        if model_info['cv_scores']['std_accuracy'] > 0.1:
+            overfitting_risk = "HIGH"
+        elif model_info['cv_scores']['std_accuracy'] > 0.05:
+            overfitting_risk = "MEDIUM"
+
+        logger.info("Risk Factors:")
+        logger.info(f"- Performance Gap: {'HIGH' if performance_gap > 0.1 else 'MEDIUM' if performance_gap > 0.05 else 'LOW'}")
+        logger.info(f"- CV Variance: {'HIGH' if model_info['cv_scores']['std_accuracy'] > 0.1 else 'MEDIUM' if model_info['cv_scores']['std_accuracy'] > 0.05 else 'LOW'}")
+
+        # Learning curve analysis
+        train_sizes = [0.2, 0.4, 0.6, 0.8, 1.0]
+        train_scores = []
+        test_scores = []
+        
+        for size in train_sizes:
+            subset_size = int(len(X_train) * size)
+            X_subset = X_train[:subset_size]
+            y_subset = y_train[:subset_size]
+            
+            model.fit(X_subset, y_subset)
+            train_scores.append(accuracy_score(y_subset, model.predict(X_subset)))
+            test_scores.append(accuracy_score(y_test, model.predict(X_test)))
+    
+        logger.info("\nLearning Curve Analysis:")
+        for size, train_score, test_score in zip(train_sizes, train_scores, test_scores):
+            logger.info(f"Training Size: {size*100}%")
+            logger.info(f"- Training Score: {train_score:.3f}")
+            logger.info(f"- Test Score: {test_score:.3f}")
+            logger.info(f"- Gap: {train_score - test_score:.3f}")
 
         return {
-            'accuracy': float(accuracy),
+            'accuracy': float(test_accuracy),
             'classification_report': class_report,
-            'cv_scores': model_info['cv_scores']
+            'cv_scores': model_info['cv_scores'],
+            'overfitting_metrics': {
+                'train_accuracy': float(train_accuracy),
+                'performance_gap': float(performance_gap),
+                'overfitting_risk': overfitting_risk,
+                'learning_curve': {
+                    'train_sizes': train_sizes,
+                    'train_scores': train_scores,
+                    'test_scores': test_scores
+            }
         }
+    }
 
     @task
     def save_model(model_path, preprocessor_path, dirs):
